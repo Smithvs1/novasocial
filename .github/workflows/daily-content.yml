@@ -1,0 +1,79 @@
+name: NOVA Collective Daily Instagram Content
+
+on:
+  schedule:
+    # 9:00 AM UTC daily (4 AM EST / 5 AM CDT — posts live by morning feed)
+    - cron: '0 9 * * *'
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — generate content but skip posting to Instagram'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  generate-and-post:
+    name: Generate content and post to Instagram
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: nova-social
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install FFmpeg (needed for Reel music mixing)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+        working-directory: .
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run daily content generator
+        run: node scripts/generate-daily-content.js
+        env:
+          # Anthropic (Claude for content generation)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # Supabase (database for prompts, topics, generated posts)
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+          # Image sources — rotate weekly (Pexels → Unsplash → Pixabay)
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+
+          # Coverr — stock video for Reels
+          COVERR_API_KEY: ${{ secrets.COVERR_API_KEY }}
+
+          # Instagram — Business Account via Meta Graph API
+          # Token needs: instagram_content_publish, instagram_basic, pages_read_engagement
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+
+          # Meta App credentials — used for automatic Instagram token refresh
+          META_APP_ID: ${{ secrets.META_APP_ID }}
+          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
+
+          # Jamendo — free music API for Reel background music
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
+
+          # Set to 'true' via workflow_dispatch to skip actual posting
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
