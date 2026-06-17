@@ -6,7 +6,10 @@
   "description": "Daily Instagram content automation for NOVA Collective — generates beauty & wellness professional content via Claude, pulls media from Coverr/Pexels/Unsplash/Pixabay, posts to Instagram",
   "scripts": {
     "generate": "node scripts/generate-daily-content.js",
-    "dry-run": "DRY_RUN=true node scripts/generate-daily-content.js"
+    "dry-run": "DRY_RUN=true node scripts/generate-daily-content.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.56.0",
@@ -15,5 +18,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
   }
 }
