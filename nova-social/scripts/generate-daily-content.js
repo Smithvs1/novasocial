@@ -57,12 +57,15 @@ function getImageSource() {
 }
 
 async function getDaySlot() {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('nc_cycle_tracker')
     .select('cycle_start')
     .eq('id', 1)
     .single();
 
+  if (error) {
+    console.error(`  ⚠ Failed to load cycle tracker: ${error.message} — defaulting to slot 1`);
+  }
   if (!data?.cycle_start) return 1;
 
   const start = new Date(data.cycle_start);
@@ -117,6 +120,10 @@ async function refreshInstagramToken(currentToken) {
     `&fb_exchange_token=${currentToken}`;
 
   const res = await fetch(url);
+  if (!res.ok) {
+    console.error(`  ⚠ IG token refresh HTTP error: ${res.status} ${res.statusText}`);
+    return null;
+  }
   const data = await res.json();
 
   if (data.error) {
@@ -212,73 +219,112 @@ function markUsed(urls) {
 
 async function getPexelsImages(query, count = 1) {
   if (!PEXELS_KEY) return [];
-  const fetchCount = Math.max(count * 5, 10);
-  const res = await fetch(
-    `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
-    { headers: { Authorization: PEXELS_KEY } }
-  );
-  const data = await res.json();
-
-  if (!data.photos?.length) {
-    const fb = await fetch(
-      `https://api.pexels.com/v1/search?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
+  try {
+    const fetchCount = Math.max(count * 5, 10);
+    const res = await fetch(
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
       { headers: { Authorization: PEXELS_KEY } }
     );
-    const fbData = await fb.json();
-    const allUrls = (fbData.photos || []).map(p => p.src.large2x || p.src.large);
-    return filterUnused(allUrls).slice(0, count);
-  }
+    if (!res.ok) {
+      console.error(`  ⚠ Pexels API error: ${res.status} ${res.statusText}`);
+      return [];
+    }
+    const data = await res.json();
 
-  const allUrls = data.photos.map(p => p.src.large2x || p.src.large);
-  return filterUnused(allUrls).slice(0, count);
+    if (!data.photos?.length) {
+      const fb = await fetch(
+        `https://api.pexels.com/v1/search?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
+        { headers: { Authorization: PEXELS_KEY } }
+      );
+      if (!fb.ok) {
+        console.error(`  ⚠ Pexels fallback API error: ${fb.status} ${fb.statusText}`);
+        return [];
+      }
+      const fbData = await fb.json();
+      const allUrls = (fbData.photos || []).map(p => p.src.large2x || p.src.large);
+      return filterUnused(allUrls).slice(0, count);
+    }
+
+    const allUrls = data.photos.map(p => p.src.large2x || p.src.large);
+    return filterUnused(allUrls).slice(0, count);
+  } catch (e) {
+    console.error(`  ⚠ Pexels image fetch failed: ${e.message}`);
+    return [];
+  }
 }
 
 // ─── Unsplash ─────────────────────────────────────────────────────────────────
 
 async function getUnsplashImages(query, count = 1) {
   if (!UNSPLASH_KEY) return [];
-  const fetchCount = Math.max(count * 5, 10);
-  const res = await fetch(
-    `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
-    { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
-  );
-  const data = await res.json();
-
-  if (!data.results?.length) {
-    const fb = await fetch(
-      `https://api.unsplash.com/search/photos?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
+  try {
+    const fetchCount = Math.max(count * 5, 10);
+    const res = await fetch(
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
       { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
     );
-    const fbData = await fb.json();
-    const allUrls = (fbData.results || []).map(p => p.urls.regular);
-    return filterUnused(allUrls).slice(0, count);
-  }
+    if (!res.ok) {
+      console.error(`  ⚠ Unsplash API error: ${res.status} ${res.statusText}`);
+      return [];
+    }
+    const data = await res.json();
 
-  const allUrls = data.results.map(p => p.urls.regular);
-  return filterUnused(allUrls).slice(0, count);
+    if (!data.results?.length) {
+      const fb = await fetch(
+        `https://api.unsplash.com/search/photos?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
+        { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
+      );
+      if (!fb.ok) {
+        console.error(`  ⚠ Unsplash fallback API error: ${fb.status} ${fb.statusText}`);
+        return [];
+      }
+      const fbData = await fb.json();
+      const allUrls = (fbData.results || []).map(p => p.urls.regular);
+      return filterUnused(allUrls).slice(0, count);
+    }
+
+    const allUrls = data.results.map(p => p.urls.regular);
+    return filterUnused(allUrls).slice(0, count);
+  } catch (e) {
+    console.error(`  ⚠ Unsplash image fetch failed: ${e.message}`);
+    return [];
+  }
 }
 
 // ─── Pixabay ──────────────────────────────────────────────────────────────────
 
 async function getPixabayImages(query, count = 1) {
   if (!PIXABAY_KEY) return [];
-  const fetchCount = Math.max(count * 5, 10);
-  const res = await fetch(
-    `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
-  );
-  const data = await res.json();
-
-  if (!data.hits?.length) {
-    const fb = await fetch(
-      `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent('luxury salon beauty professional')}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
+  try {
+    const fetchCount = Math.max(count * 5, 10);
+    const res = await fetch(
+      `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
     );
-    const fbData = await fb.json();
-    const allUrls = (fbData.hits || []).map(h => h.largeImageURL || h.webformatURL);
-    return filterUnused(allUrls).slice(0, count);
-  }
+    if (!res.ok) {
+      console.error(`  ⚠ Pixabay API error: ${res.status} ${res.statusText}`);
+      return [];
+    }
+    const data = await res.json();
 
-  const allUrls = data.hits.map(h => h.largeImageURL || h.webformatURL);
-  return filterUnused(allUrls).slice(0, count);
+    if (!data.hits?.length) {
+      const fb = await fetch(
+        `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent('luxury salon beauty professional')}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
+      );
+      if (!fb.ok) {
+        console.error(`  ⚠ Pixabay fallback API error: ${fb.status} ${fb.statusText}`);
+        return [];
+      }
+      const fbData = await fb.json();
+      const allUrls = (fbData.hits || []).map(h => h.largeImageURL || h.webformatURL);
+      return filterUnused(allUrls).slice(0, count);
+    }
+
+    const allUrls = data.hits.map(h => h.largeImageURL || h.webformatURL);
+    return filterUnused(allUrls).slice(0, count);
+  } catch (e) {
+    console.error(`  ⚠ Pixabay image fetch failed: ${e.message}`);
+    return [];
+  }
 }
 
 // ─── Coverr (video for Reels) ─────────────────────────────────────────────────
@@ -300,6 +346,10 @@ async function getCoverrVideo(query) {
         `https://api.coverr.co/videos?query=${encodeURIComponent(q)}&page_size=5`,
         { headers: { Authorization: `Bearer ${COVERR_KEY}` } }
       );
+      if (!res.ok) {
+        console.warn(`  ⚠ Coverr API error for "${q}": ${res.status} ${res.statusText}`);
+        continue;
+      }
       const data = await res.json();
 
       if (data.hits?.length) {
@@ -338,6 +388,10 @@ async function getPexelsVideo(query) {
         `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=5&size=medium`,
         { headers: { Authorization: PEXELS_KEY } }
       );
+      if (!res.ok) {
+        console.warn(`  ⚠ Pexels video API error for "${q}": ${res.status} ${res.statusText}`);
+        continue;
+      }
       const data = await res.json();
       if (data.videos?.length) {
         for (const vid of data.videos) {
@@ -381,6 +435,10 @@ async function getBackgroundMusic(query) {
         + `&vocalinstrumental=instrumental&include=musicinfo`
         + `&audioformat=mp32`;
       const res  = await fetch(url);
+      if (!res.ok) {
+        console.warn(`  ⚠ Jamendo API error for "${term}": ${res.status} ${res.statusText}`);
+        continue;
+      }
       const data = await res.json();
       if (data.results?.length) {
         const downloadable = data.results.filter(t => t.audiodownload_allowed !== false);
@@ -419,6 +477,7 @@ async function uploadMixedVideo(buffer) {
   const { data: urlData } = supabase.storage
     .from('reel-videos')
     .getPublicUrl(fileName);
+  if (!urlData?.publicUrl) throw new Error(`Failed to get public URL for uploaded file: ${fileName}`);
   return urlData.publicUrl;
 }
 
@@ -430,10 +489,12 @@ async function mixVideoWithMusic(videoUrl, musicInfo) {
 
   try {
     const vidRes = await fetch(videoUrl);
+    if (!vidRes.ok) throw new Error(`Failed to download video: ${vidRes.status} ${vidRes.statusText}`);
     const vidBuf = Buffer.from(await vidRes.arrayBuffer());
     writeFileSync(videoPath, vidBuf);
 
     const musRes = await fetch(musicInfo.url);
+    if (!musRes.ok) throw new Error(`Failed to download music: ${musRes.status} ${musRes.statusText}`);
     const musBuf = Buffer.from(await musRes.arrayBuffer());
     writeFileSync(audioPath, musBuf);
 
@@ -454,7 +515,8 @@ async function mixVideoWithMusic(videoUrl, musicInfo) {
         { timeout: 120_000, stdio: 'pipe' }
       );
       mixed = true;
-    } catch {
+    } catch (ffmpegErr) {
+      console.warn(`  ⚠ FFmpeg mix with original audio failed: ${ffmpegErr.message} — retrying without original audio`);
       execSync(
         `ffmpeg -y -i "${videoPath}" -i "${audioPath}" `
         + `-filter_complex "[1:a]volume=0.25,afade=t=out:st=${Math.max(0, duration - 2)}:d=2[aout]" `
@@ -483,28 +545,34 @@ async function createVideoFromImage(imageUrl, musicInfo, durationSec = 10) {
 
   try {
     const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) throw new Error(`Failed to download image: ${imgRes.status} ${imgRes.statusText}`);
     const imgBuf = Buffer.from(await imgRes.arrayBuffer());
     writeFileSync(imgPath, imgBuf);
 
     const musRes = await fetch(musicInfo.url);
+    if (!musRes.ok) throw new Error(`Failed to download music: ${musRes.status} ${musRes.statusText}`);
     const musBuf = Buffer.from(await musRes.arrayBuffer());
     writeFileSync(audioPath, musBuf);
 
     const fps = 30;
     const totalFrames = durationSec * fps;
-    execSync(
-      `ffmpeg -y -loop 1 -i "${imgPath}" -i "${audioPath}" `
-      + `-filter_complex "`
-      + `[0:v]scale=1920:1920:force_original_aspect_ratio=increase,`
-      + `crop=1080:1920,`
-      + `zoompan=z='min(zoom+0.0005,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1080x1920:fps=${fps},`
-      + `fade=t=in:st=0:d=0.5,fade=t=out:st=${durationSec - 0.5}:d=0.5[v];`
-      + `[1:a]volume=0.30,afade=t=in:st=0:d=1,afade=t=out:st=${durationSec - 2}:d=2[a]`
-      + `" `
-      + `-map "[v]" -map "[a]" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k `
-      + `-t ${durationSec} -pix_fmt yuv420p -shortest "${outputPath}"`,
-      { timeout: 180_000, stdio: 'pipe' }
-    );
+    try {
+      execSync(
+        `ffmpeg -y -loop 1 -i "${imgPath}" -i "${audioPath}" `
+        + `-filter_complex "`
+        + `[0:v]scale=1920:1920:force_original_aspect_ratio=increase,`
+        + `crop=1080:1920,`
+        + `zoompan=z='min(zoom+0.0005,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1080x1920:fps=${fps},`
+        + `fade=t=in:st=0:d=0.5,fade=t=out:st=${durationSec - 0.5}:d=0.5[v];`
+        + `[1:a]volume=0.30,afade=t=in:st=0:d=1,afade=t=out:st=${durationSec - 2}:d=2[a]`
+        + `" `
+        + `-map "[v]" -map "[a]" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k `
+        + `-t ${durationSec} -pix_fmt yuv420p -shortest "${outputPath}"`,
+        { timeout: 180_000, stdio: 'pipe' }
+      );
+    } catch (ffmpegErr) {
+      throw new Error(`FFmpeg Ken Burns video creation failed: ${ffmpegErr.message}`);
+    }
 
     const outputBuf = readFileSync(outputPath);
     return await uploadMixedVideo(outputBuf);
@@ -568,22 +636,39 @@ async function generateContent(promptText, topic) {
     messages:   [{ role: 'user', content: filledPrompt }],
   });
 
+  if (!message.content?.length || !message.content[0]?.text) {
+    throw new Error('Claude returned an empty or unexpected response');
+  }
   const raw       = message.content[0].text;
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error(`Claude did not return valid JSON.\nRaw: ${raw.slice(0, 300)}`);
-  return JSON.parse(jsonMatch[0]);
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (parseErr) {
+    throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nExtracted: ${jsonMatch[0].slice(0, 300)}`);
+  }
 }
 
 // ─── Instagram ────────────────────────────────────────────────────────────────
 
 async function waitForIgContainer(creationId, maxAttempts = 90) {
   for (let i = 0; i < maxAttempts; i++) {
-    const res  = await fetch(
-      `https://graph.facebook.com/v21.0/${creationId}?fields=status_code&access_token=${IG_TOKEN}`
-    );
-    const data = await res.json();
-    if (data.status_code === 'FINISHED') return;
-    if (data.status_code === 'ERROR') throw new Error(`Instagram container error: ${JSON.stringify(data)}`);
+    try {
+      const res  = await fetch(
+        `https://graph.facebook.com/v21.0/${creationId}?fields=status_code&access_token=${IG_TOKEN}`
+      );
+      if (!res.ok) {
+        console.warn(`  ⚠ IG container status check HTTP error: ${res.status} (attempt ${i + 1}/${maxAttempts})`);
+        await sleep(2000);
+        continue;
+      }
+      const data = await res.json();
+      if (data.status_code === 'FINISHED') return;
+      if (data.status_code === 'ERROR') throw new Error(`Instagram container error: ${JSON.stringify(data)}`);
+    } catch (e) {
+      if (e.message.startsWith('Instagram container error')) throw e;
+      console.warn(`  ⚠ IG container status check failed: ${e.message} (attempt ${i + 1}/${maxAttempts})`);
+    }
     await sleep(2000);
   }
   throw new Error(`Instagram container timed out after ${maxAttempts * 2} seconds`);
@@ -847,10 +932,11 @@ async function main() {
               reelUrl = mixedUrl;
 
               // Save music info
-              await supabase
+              const { error: musicSaveErr } = await supabase
                 .from('nc_generated_posts')
                 .update({ music_info: music })
                 .eq('id', savedPost.id);
+              if (musicSaveErr) console.warn(`  ⚠ Failed to save music info: ${musicSaveErr.message}`);
             } else {
               console.log('  ↷ No music found — posting video without background music');
             }
@@ -868,10 +954,11 @@ async function main() {
               reelUrl = await createVideoFromImage(mediaUrls[0], music, 10);
               console.log(`  ✓ Created Ken Burns video from image — uploaded to Supabase Storage`);
 
-              await supabase
+              const { error: imgVidSaveErr } = await supabase
                 .from('nc_generated_posts')
                 .update({ music_info: music, video_url: reelUrl })
                 .eq('id', savedPost.id);
+              if (imgVidSaveErr) console.warn(`  ⚠ Failed to save video info: ${imgVidSaveErr.message}`);
             }
           } catch (imgVidErr) {
             console.warn(`  ⚠ Image-to-video failed: ${imgVidErr.message}`);
@@ -894,13 +981,14 @@ async function main() {
       }
 
       // 7. Update Supabase with post ID
-      await supabase
+      const { error: statusUpdateErr } = await supabase
         .from('nc_generated_posts')
         .update({
           instagram_post_id: igPostId,
           publish_status:    igPostId ? 'PUBLISHED' : 'FAILED',
         })
         .eq('id', savedPost.id);
+      if (statusUpdateErr) console.error(`  ⚠ Failed to update publish status: ${statusUpdateErr.message}`);
 
     } catch (err) {
       console.error(`  ✗ Fatal error for ${slot.post_type}: ${err.message}`);
