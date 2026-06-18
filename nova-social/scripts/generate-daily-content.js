@@ -143,6 +143,12 @@ async function refreshInstagramToken(currentToken) {
 
 async function loadAndRefreshTokens() {
   try {
+    const envToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+    if (envToken) {
+      IG_TOKEN = envToken;
+      console.log('  ✓ Using IG token from environment variable (System User token — never expires)');
+      return;
+    }
     const stored = await loadTokenFromStore('instagram_access_token');
     if (stored?.value) {
       IG_TOKEN = stored.value;
@@ -155,11 +161,8 @@ async function loadAndRefreshTokens() {
         const newToken = await refreshInstagramToken(IG_TOKEN);
         if (newToken) IG_TOKEN = newToken;
       }
-    } else if (IG_TOKEN) {
-      console.log('  ↻ No stored IG token — seeding from env var and refreshing...');
-      const newToken = await refreshInstagramToken(IG_TOKEN);
-      if (newToken) IG_TOKEN = newToken;
-      else await saveTokenToStore('instagram_access_token', IG_TOKEN, 5184000);
+    } else {
+      console.warn('  ⚠ No IG token found in env or store');
     }
   } catch (e) {
     console.error(`  ⚠ Token store error: ${e.message} — using env var`);
@@ -631,7 +634,7 @@ async function generateContent(promptText, topic) {
   const filledPrompt = promptText.replace('{TOPIC}', topic);
 
   const message = await anthropic.messages.create({
-    model:      'claude-sonnet-4-20250514',
+    model:      'claude-3-5-sonnet-20241022',
     max_tokens: 2048,
     messages:   [{ role: 'user', content: filledPrompt }],
   });
