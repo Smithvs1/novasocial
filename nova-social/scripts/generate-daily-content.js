@@ -630,14 +630,40 @@ async function getMedia(query, queries, postType, imageSource) {
 
 // ─── Claude ───────────────────────────────────────────────────────────────────
 
+const CLAUDE_MODELS = [
+  'claude-sonnet-4-20250514',
+  'claude-3-7-sonnet-20250219',
+  'claude-3-5-sonnet-20241022',
+  'claude-3-5-sonnet-latest',
+  'claude-3-5-sonnet-20240620',
+  'claude-3-haiku-20240307',
+];
+
 async function generateContent(promptText, topic) {
   const filledPrompt = promptText.replace('{TOPIC}', topic);
 
-  const message = await anthropic.messages.create({
-    model:      'claude-3-5-sonnet-20241022',
-    max_tokens: 2048,
-    messages:   [{ role: 'user', content: filledPrompt }],
-  });
+  let message;
+  let usedModel;
+  for (const model of CLAUDE_MODELS) {
+    try {
+      message = await anthropic.messages.create({
+        model,
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: filledPrompt }],
+      });
+      usedModel = model;
+      break;
+    } catch (err) {
+      if (err.status === 404) {
+        console.warn(`  ⚠ Model ${model} not available, trying next...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (!message) throw new Error(`No Claude model available. Tried: ${CLAUDE_MODELS.join(', ')}`);
+  console.log(`  ✓ Generated content using ${usedModel}`);
 
   if (!message.content?.length || !message.content[0]?.text) {
     throw new Error('Claude returned an empty or unexpected response');
