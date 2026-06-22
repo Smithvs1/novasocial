@@ -2,7 +2,7 @@ name: NOVA Collective Daily Instagram Content
 
 on:
   schedule:
-    # 9:00 AM UTC daily (4 AM EST / 5 AM CDT — posts live by morning feed)
+    # 9:00 AM UTC daily — generator publishes 4 posts per run
     - cron: '0 9 * * *'
   # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
   generate-and-post:
     name: Generate content and post to Instagram
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     defaults:
       run:
@@ -45,7 +45,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run daily content generator
+      - name: Run 4-post daily content generator
         run: node scripts/generate-daily-content.js
         env:
           # Anthropic (Claude for content generation)
