@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
+import sharp from 'sharp';
 import ws from 'ws';
 import { execSync } from 'node:child_process';
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from 'node:fs';
@@ -33,6 +34,68 @@ const DRY_RUN       = process.env.DRY_RUN === 'true';
 const META_APP_ID        = process.env.META_APP_ID;
 const META_APP_SECRET    = process.env.META_APP_SECRET;
 const JAMENDO_CLIENT_ID  = process.env.JAMENDO_CLIENT_ID;
+const MEDIA_BUCKET       = process.env.MEDIA_BUCKET || 'reel-videos';
+const BRANDED_TEXT_POST_TYPE = 'TEXT_CAROUSEL';
+
+const BRANDED_TEXT_TOPICS = [
+  'Why NOVA Collective is a membership, not a traditional suite model',
+  'What founding members get first access to at NOVA Collective',
+  'How a private suite helps beauty professionals build a premium client experience',
+  'The difference between working behind a chair and building your own beauty brand',
+  'Why clients remember privacy, comfort, and consistency',
+  'How custom finishes make your suite feel like your brand from day one',
+  'What beauty professionals should look for before choosing a suite community',
+  'How hairstylists can turn loyal clients into a scalable business',
+  'How barbers can create a private, appointment-only grooming experience',
+  'How estheticians can make treatment-room privacy feel premium',
+  'How nail techs can design a studio that photographs beautifully',
+  'How massage therapists can create a quiet wellness experience clients rebook',
+  'Why lash and brow techs need a clean, private, focused room',
+  'Why tattoo artists need a professional studio that matches their work',
+  'How Reiki and wellness pros can create a calm dedicated healing space',
+  'The amenities clients notice before they ever sit down',
+  'How communal shampoo bowls and dryers support a cleaner suite layout',
+  'Why a break room with washer and dryer matters for daily operations',
+  'How to announce that you are moving into your own private suite',
+  'How to build pre-opening demand before your suite is ready',
+  'Why your name, your booking link, and your suite should work together',
+  'How beauty pros can stop blending in and start building brand recognition',
+  'Why luxury does not have to feel cold or unreachable',
+  'How NOVA Collective supports professionals who are ready for ownership energy',
+  'What to tell clients when you are upgrading into a private suite',
+  'How a curated community raises the standard for every member',
+  'Why limited founding memberships create urgency for serious professionals',
+  'The client-experience details that turn appointments into referrals',
+  'How to make your suite content work harder on Instagram',
+  'Why your next level needs a space designed around your business',
+];
+
+const BRANDED_TEXT_PROMPT = `You are a luxury Instagram creative director for NOVA Collective, a private salon suite membership for elite beauty and wellness professionals in Louisville, KY.
+
+CRITICAL BRAND RULES:
+- NOVA Collective is a PRIVATE MEMBERSHIP, not a lease. Members hold a Master Membership Agreement with a revocable, non-exclusive license to use a designated workspace. They pay membership dues, not rent.
+- Always say "membership," "private suite," "workspace," or "license to use space" — NEVER say "lease," "rent," "rental," "tenant," or "landlord."
+- Position NOVA Collective as an exclusive, curated, high-end community for serious beauty and wellness professionals.
+- Mention www.novacollective.vip in the caption.
+- Use polished, premium, sales-forward language without sounding generic.
+
+TASK: Create copy for a TEXT-FIRST Instagram carousel graphic post. This post will be rendered as branded NOVA graphics, not stock imagery. It should feel like the examples: a mix of advertising, salon-suite education, bold business tips, and swipeable word slides.
+
+TOPIC: {TOPIC}
+
+OUTPUT FORMAT (return ONLY valid JSON, no markdown, no extra text):
+{
+  "title": "Internal title",
+  "slides": [
+    {"index": 1, "kicker": "short category label", "headline": "cover headline, max 9 words", "body": "one supporting sentence, max 20 words"},
+    {"index": 2, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
+    {"index": 3, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
+    {"index": 4, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
+    {"index": 5, "kicker": "short label", "headline": "CTA headline, max 9 words", "body": "include www.novacollective.vip, max 22 words"}
+  ],
+  "caption": "Instagram caption, 120–180 words, selling NOVA Collective membership and asking them to visit www.novacollective.vip",
+  "hashtags": "12–18 relevant hashtags"
+}`;
 
 // ─── Week / day helpers ───────────────────────────────────────────────────────
 
@@ -223,6 +286,129 @@ function filterUnused(urls, excludeSet) {
 
 function markUsed(urls) {
   for (const url of urls) recentlyUsedUrls.add(normalizeUrl(url));
+}
+
+function getBrandedTextTopic(daySlot) {
+  return BRANDED_TEXT_TOPICS[(daySlot - 1) % BRANDED_TEXT_TOPICS.length];
+}
+
+function withBrandedTextSlot(schedule) {
+  if (schedule.some(slot => slot.post_type === BRANDED_TEXT_POST_TYPE)) return schedule;
+  return [...schedule, { post_type: BRANDED_TEXT_POST_TYPE, focus_type: 'A' }];
+}
+
+function sortDailySchedule(schedule) {
+  const order = ['REEL', 'STATIC', 'CAROUSEL', BRANDED_TEXT_POST_TYPE];
+  return [...schedule].sort((a, b) => order.indexOf(a.post_type) - order.indexOf(b.post_type));
+}
+
+function isCarouselPostType(postType) {
+  return postType === 'CAROUSEL' || postType === BRANDED_TEXT_POST_TYPE;
+}
+
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function wrapText(text, maxChars) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxChars && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function svgText(text, { x, y, size, weight = 400, fill, maxChars, lineHeight, anchor = 'middle', family = 'Arial, Helvetica, sans-serif', transform = '' }) {
+  return wrapText(text, maxChars).map((line, i) => (
+    `<text x="${x}" y="${y + (i * lineHeight)}" text-anchor="${anchor}" font-family="${family}" font-size="${size}" font-weight="${weight}" fill="${fill}" ${transform}>${escapeXml(line)}</text>`
+  )).join('\n');
+}
+
+function normalizeBrandedSlides(generated, topicText) {
+  const fallback = [
+    { index: 1, kicker: 'NOVA COLLECTIVE', headline: topicText, body: 'A private suite membership designed for serious beauty professionals.' },
+    { index: 2, kicker: 'CLIENT EXPERIENCE', headline: 'Make every detail feel premium', body: 'Privacy, comfort, and consistency help clients remember your brand.' },
+    { index: 3, kicker: 'BUSINESS MOVE', headline: 'Your suite should sell for you', body: 'A polished space makes your content, referrals, and rebooking easier.' },
+    { index: 4, kicker: 'MEMBERSHIP', headline: 'Built for beauty entrepreneurs', body: 'NOVA Collective gives professionals a curated place to grow.' },
+    { index: 5, kicker: 'APPLY TODAY', headline: 'Your next level needs a room', body: 'Explore membership at www.novacollective.vip.' },
+  ];
+
+  const slides = Array.isArray(generated.slides) && generated.slides.length >= 5
+    ? generated.slides.slice(0, 5)
+    : fallback;
+
+  return slides.map((slide, idx) => ({
+    index: idx + 1,
+    kicker: slide.kicker || fallback[idx].kicker,
+    headline: slide.headline || fallback[idx].headline,
+    body: slide.body || fallback[idx].body,
+  }));
+}
+
+function brandedSlideSvg(slide, index, total) {
+  const dark = index % 3 === 1;
+  const blush = index % 3 === 2;
+  const bg = dark ? '#071f3f' : (blush ? '#f4e8df' : '#f8f3ea');
+  const primary = dark ? '#f8f3ea' : '#071f3f';
+  const accent = dark ? '#d8b66a' : '#b6863b';
+  const muted = dark ? '#d9e2ef' : '#5f6673';
+  const bodyLines = wrapText(slide.body, 38);
+  const bodyStart = bodyLines.length > 2 ? 830 : 860;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350">
+    <rect width="1080" height="1350" fill="${bg}"/>
+    <circle cx="930" cy="170" r="310" fill="none" stroke="${accent}" stroke-width="5" opacity="0.45"/>
+    <circle cx="170" cy="1160" r="260" fill="none" stroke="${accent}" stroke-width="3" opacity="0.28"/>
+    <path d="M0 0 H1080 V92 H0 Z" fill="${dark ? '#030d1d' : '#ffffff'}" opacity="0.72"/>
+    <text x="70" y="58" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" letter-spacing="5" fill="${accent}">NOVA COLLECTIVE</text>
+    <text x="1010" y="58" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="${primary}">${index}/${total}</text>
+    <text x="540" y="275" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" letter-spacing="6" fill="${accent}">${escapeXml(String(slide.kicker).toUpperCase())}</text>
+    <line x1="245" y1="315" x2="835" y2="315" stroke="${accent}" stroke-width="3"/>
+    ${svgText(slide.headline, { x: 540, y: 470, size: 82, weight: 800, fill: primary, maxChars: 15, lineHeight: 96 })}
+    <rect x="175" y="${bodyStart - 70}" width="730" height="${Math.max(210, bodyLines.length * 58 + 96)}" rx="34" fill="${dark ? '#0b2d5c' : '#ffffff'}" opacity="0.84"/>
+    ${svgText(slide.body, { x: 540, y: bodyStart, size: 42, weight: 500, fill: dark ? '#f8f3ea' : muted, maxChars: 38, lineHeight: 58 })}
+    <text x="540" y="1220" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" letter-spacing="4" fill="${accent}">WWW.NOVACOLLECTIVE.VIP</text>
+    <text x="540" y="1272" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3" fill="${muted}">@NOVACOLLECTIVEVIP</text>
+  </svg>`;
+}
+
+async function uploadGeneratedImage(buffer, prefix) {
+  const fileName = `${prefix}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  const { error: uploadErr } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(fileName, buffer, { contentType: 'image/jpeg', upsert: false });
+  if (uploadErr) throw new Error(`Supabase image upload: ${uploadErr.message}`);
+
+  const { data: urlData } = supabase.storage
+    .from(MEDIA_BUCKET)
+    .getPublicUrl(fileName);
+  if (!urlData?.publicUrl) throw new Error(`Failed to get public URL for uploaded image: ${fileName}`);
+  return urlData.publicUrl;
+}
+
+async function createBrandedTextCarousel(generated, topicText) {
+  const slides = normalizeBrandedSlides(generated, topicText);
+  const urls = [];
+  for (let i = 0; i < slides.length; i++) {
+    const svg = brandedSlideSvg(slides[i], i + 1, slides.length);
+    const jpeg = await sharp(Buffer.from(svg)).jpeg({ quality: 92 }).toBuffer();
+    urls.push(await uploadGeneratedImage(jpeg, 'branded-text-carousel'));
+  }
+  return urls;
 }
 
 // ─── Pexels ───────────────────────────────────────────────────────────────────
@@ -601,10 +787,13 @@ async function getImages(query, count, imageSource, excludeSet) {
   return getPixabayImages(query, count, excludeSet);
 }
 
-async function getMedia(query, queries, postType, imageSource) {
+async function getMedia(query, queries, postType, imageSource, generated, topicText) {
   let result;
 
-  if (postType === 'REEL') {
+  if (postType === BRANDED_TEXT_POST_TYPE) {
+    const urls = await createBrandedTextCarousel(generated, topicText);
+    result = { urls, isVideo: false, source: 'generated-graphic' };
+  } else if (postType === 'REEL') {
     // Try Coverr first, then Pexels video, then fall back to static image
     let videoUrl = await getCoverrVideo(query);
     if (!videoUrl) {
@@ -864,8 +1053,8 @@ async function main() {
     }
   }
 
-  if (!PEXELS_KEY && !UNSPLASH_KEY && !PIXABAY_KEY) console.warn('⚠ No image API keys — media fetching will fail');
-  if (!COVERR_KEY) console.warn('⚠ Coverr API key missing — Reels will fall back to Pexels video or static image');
+  if (!PEXELS_KEY && !UNSPLASH_KEY && !PIXABAY_KEY) console.warn('⚠ No image API keys — stock media fetching will fail');
+  if (!COVERR_KEY) console.warn('⚠ Coverr API key missing — Reels will fall back to Pexels video or static image post');
 
   const { data: schedule, error: schedErr } = await supabase
     .from('nc_day_schedule')
@@ -876,47 +1065,64 @@ async function main() {
     throw new Error(`Could not load schedule for day_of_week=${dayOfWeek}: ${schedErr?.message}`);
   }
 
-  for (const slot of schedule) {
+  const dailySchedule = sortDailySchedule(withBrandedTextSlot(schedule));
+  console.log(`✓ Daily schedule loaded: ${dailySchedule.map(slot => slot.post_type).join(', ')}`);
+
+  for (const slot of dailySchedule) {
     console.log(`\n→ ${slot.post_type} (focus: ${slot.focus_type})`);
 
     try {
-      // 1. Topic
-      const { data: topic, error: topicErr } = await supabase
-        .from('nc_topics')
-        .select('*')
-        .eq('post_type', slot.post_type)
-        .eq('day_slot', daySlot)
-        .single();
+      // 1. Topic + prompt
+      let topic;
+      let prompt;
+      if (slot.post_type === BRANDED_TEXT_POST_TYPE) {
+        topic = {
+          id: null,
+          topic: getBrandedTextTopic(daySlot),
+        };
+        prompt = {
+          id: null,
+          prompt_text: BRANDED_TEXT_PROMPT,
+        };
+      } else {
+        const { data: dbTopic, error: topicErr } = await supabase
+          .from('nc_topics')
+          .select('*')
+          .eq('post_type', slot.post_type)
+          .eq('day_slot', daySlot)
+          .single();
 
-      if (topicErr || !topic) {
-        console.error(`  ✗ No topic found for ${slot.post_type} slot ${daySlot}`);
-        continue;
+        if (topicErr || !dbTopic) {
+          console.error(`  ✗ No topic found for ${slot.post_type} slot ${daySlot}`);
+          continue;
+        }
+        topic = dbTopic;
+
+        const promptFocus = slot.focus_type === 'A'
+          ? (Math.random() < 0.5 ? 'N' : 'C')
+          : slot.focus_type;
+
+        const { data: dbPrompt, error: promptErr } = await supabase
+          .from('nc_prompts')
+          .select('*')
+          .eq('post_type', slot.post_type)
+          .eq('focus_type', promptFocus)
+          .eq('active', true)
+          .single();
+
+        if (promptErr || !dbPrompt) {
+          console.error(`  ✗ No prompt for ${slot.post_type}/${promptFocus}`);
+          continue;
+        }
+        prompt = dbPrompt;
       }
       console.log(`  Topic: "${topic.topic}"`);
 
-      // 2. Prompt (A days randomly choose N or C)
-      const promptFocus = slot.focus_type === 'A'
-        ? (Math.random() < 0.5 ? 'N' : 'C')
-        : slot.focus_type;
-
-      const { data: prompt, error: promptErr } = await supabase
-        .from('nc_prompts')
-        .select('*')
-        .eq('post_type', slot.post_type)
-        .eq('focus_type', promptFocus)
-        .eq('active', true)
-        .single();
-
-      if (promptErr || !prompt) {
-        console.error(`  ✗ No prompt for ${slot.post_type}/${promptFocus}`);
-        continue;
-      }
-
-      // 3. Generate content via Claude
+      // 2. Generate content via Claude
       const generated = await generateContent(prompt.prompt_text, topic.topic);
       console.log(`  ✓ Claude generated: "${generated.title || topic.topic}"`);
 
-      // 4. Fetch media
+      // 3. Fetch media
       const primaryQuery = generated.image_query || 'luxury salon beauty professional';
       let carouselQueries = [];
       if (slot.post_type === 'CAROUSEL') {
@@ -937,13 +1143,16 @@ async function main() {
         }
       }
 
-      const { urls: mediaUrls, isVideo } = await getMedia(
+      const { urls: mediaUrls, isVideo, source } = await getMedia(
         primaryQuery,
         carouselQueries,
         slot.post_type,
-        imageSource
+        imageSource,
+        generated,
+        topic.topic
       );
-      console.log(`  ✓ Media — ${mediaUrls.length} ${isVideo ? 'video' : 'image'}(s) from ${isVideo ? 'coverr/pexels' : imageSource}`);
+      const mediaSource = source || (isVideo ? 'coverr/pexels' : imageSource);
+      console.log(`  ✓ Media — ${mediaUrls.length} ${isVideo ? 'video' : 'image'}(s) from ${mediaSource}`);
 
       // 5. Save to Supabase
       const { data: savedPost, error: saveErr } = await supabase
@@ -952,13 +1161,13 @@ async function main() {
           scheduled_date: today,
           post_type:      slot.post_type,
           focus_type:     slot.focus_type,
-          topic_id:       topic.id,
-          prompt_id:      prompt.id,
+          topic_id:       topic.id || null,
+          prompt_id:      prompt.id || null,
           topic_text:     topic.topic,
           generated_json: generated,
           image_urls:     isVideo ? null : mediaUrls,
           video_url:      isVideo ? mediaUrls[0] : null,
-          media_source:   isVideo ? 'coverr' : imageSource,
+          media_source:   mediaSource,
           safety_status:  'SAFE',
           publish_status: 'DRAFT',
         })
@@ -1002,32 +1211,9 @@ async function main() {
           }
           igPostId = await postToInstagramReel(reelUrl, caption.slice(0, 2200));
         } else if (slot.post_type === 'REEL' && !isVideo) {
-          // Static image Reel — create video from image with Ken Burns + music
-          let reelUrl = null;
-          try {
-            const music = await getBackgroundMusic(topic.topic);
-            if (music) {
-              console.log(`  ♪ Found music: "${music.name}" by ${music.artist}`);
-              reelUrl = await createVideoFromImage(mediaUrls[0], music, 10);
-              console.log(`  ✓ Created Ken Burns video from image — uploaded to Supabase Storage`);
-
-              const { error: imgVidSaveErr } = await supabase
-                .from('nc_generated_posts')
-                .update({ music_info: music, video_url: reelUrl })
-                .eq('id', savedPost.id);
-              if (imgVidSaveErr) console.warn(`  ⚠ Failed to save video info: ${imgVidSaveErr.message}`);
-            }
-          } catch (imgVidErr) {
-            console.warn(`  ⚠ Image-to-video failed: ${imgVidErr.message}`);
-          }
-
-          if (reelUrl) {
-            igPostId = await postToInstagramReel(reelUrl, caption.slice(0, 2200));
-          } else {
-            console.log('  ↷ Falling back to static image post for this Reel slot');
-            igPostId = await postToInstagramSingle(mediaUrls[0], caption.slice(0, 2200));
-          }
-        } else if (slot.post_type === 'CAROUSEL' && mediaUrls.length > 1) {
+          console.log('  ↷ Reel slot has a still image — publishing as a regular image post to avoid distorted image-to-reel crops');
+          igPostId = await postToInstagramSingle(mediaUrls[0], caption.slice(0, 2200));
+        } else if (isCarouselPostType(slot.post_type) && mediaUrls.length > 1) {
           igPostId = await postToInstagramCarousel(mediaUrls, caption.slice(0, 2200));
         } else {
           igPostId = await postToInstagramSingle(mediaUrls[0], caption.slice(0, 2200));
