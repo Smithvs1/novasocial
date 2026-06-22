@@ -209,9 +209,16 @@ function normalizeUrl(url) {
   }
 }
 
-function filterUnused(urls) {
-  const fresh = urls.filter(u => !recentlyUsedUrls.has(normalizeUrl(u)));
-  return fresh.length > 0 ? fresh : urls;
+function filterUnused(urls, excludeSet) {
+  const exclude = excludeSet || new Set();
+  const fresh = urls.filter(u => {
+    const norm = normalizeUrl(u);
+    return !recentlyUsedUrls.has(norm) && !exclude.has(norm);
+  });
+  if (fresh.length > 0) return fresh;
+  // All used globally — at least exclude within-post duplicates
+  const deduped = urls.filter(u => !exclude.has(normalizeUrl(u)));
+  return deduped.length > 0 ? deduped : urls;
 }
 
 function markUsed(urls) {
@@ -220,7 +227,7 @@ function markUsed(urls) {
 
 // ─── Pexels ───────────────────────────────────────────────────────────────────
 
-async function getPexelsImages(query, count = 1) {
+async function getPexelsImages(query, count = 1, excludeSet) {
   if (!PEXELS_KEY) return [];
   try {
     const fetchCount = Math.max(count * 5, 10);
@@ -245,11 +252,11 @@ async function getPexelsImages(query, count = 1) {
       }
       const fbData = await fb.json();
       const allUrls = (fbData.photos || []).map(p => p.src.large2x || p.src.large);
-      return filterUnused(allUrls).slice(0, count);
+      return filterUnused(allUrls, excludeSet).slice(0, count);
     }
 
     const allUrls = data.photos.map(p => p.src.large2x || p.src.large);
-    return filterUnused(allUrls).slice(0, count);
+    return filterUnused(allUrls, excludeSet).slice(0, count);
   } catch (e) {
     console.error(`  ⚠ Pexels image fetch failed: ${e.message}`);
     return [];
@@ -258,7 +265,7 @@ async function getPexelsImages(query, count = 1) {
 
 // ─── Unsplash ─────────────────────────────────────────────────────────────────
 
-async function getUnsplashImages(query, count = 1) {
+async function getUnsplashImages(query, count = 1, excludeSet) {
   if (!UNSPLASH_KEY) return [];
   try {
     const fetchCount = Math.max(count * 5, 10);
@@ -283,11 +290,11 @@ async function getUnsplashImages(query, count = 1) {
       }
       const fbData = await fb.json();
       const allUrls = (fbData.results || []).map(p => p.urls.regular);
-      return filterUnused(allUrls).slice(0, count);
+      return filterUnused(allUrls, excludeSet).slice(0, count);
     }
 
     const allUrls = data.results.map(p => p.urls.regular);
-    return filterUnused(allUrls).slice(0, count);
+    return filterUnused(allUrls, excludeSet).slice(0, count);
   } catch (e) {
     console.error(`  ⚠ Unsplash image fetch failed: ${e.message}`);
     return [];
@@ -296,7 +303,7 @@ async function getUnsplashImages(query, count = 1) {
 
 // ─── Pixabay ──────────────────────────────────────────────────────────────────
 
-async function getPixabayImages(query, count = 1) {
+async function getPixabayImages(query, count = 1, excludeSet) {
   if (!PIXABAY_KEY) return [];
   try {
     const fetchCount = Math.max(count * 5, 10);
@@ -319,11 +326,11 @@ async function getPixabayImages(query, count = 1) {
       }
       const fbData = await fb.json();
       const allUrls = (fbData.hits || []).map(h => h.largeImageURL || h.webformatURL);
-      return filterUnused(allUrls).slice(0, count);
+      return filterUnused(allUrls, excludeSet).slice(0, count);
     }
 
     const allUrls = data.hits.map(h => h.largeImageURL || h.webformatURL);
-    return filterUnused(allUrls).slice(0, count);
+    return filterUnused(allUrls, excludeSet).slice(0, count);
   } catch (e) {
     console.error(`  ⚠ Pixabay image fetch failed: ${e.message}`);
     return [];
@@ -588,10 +595,10 @@ async function createVideoFromImage(imageUrl, musicInfo, durationSec = 10) {
 
 // ─── Media router — picks source based on week + post type ───────────────────
 
-async function getImages(query, count, imageSource) {
-  if (imageSource === 'pexels') return getPexelsImages(query, count);
-  if (imageSource === 'unsplash') return getUnsplashImages(query, count);
-  return getPixabayImages(query, count);
+async function getImages(query, count, imageSource, excludeSet) {
+  if (imageSource === 'pexels') return getPexelsImages(query, count, excludeSet);
+  if (imageSource === 'unsplash') return getUnsplashImages(query, count, excludeSet);
+  return getPixabayImages(query, count, excludeSet);
 }
 
 async function getMedia(query, queries, postType, imageSource) {
@@ -613,10 +620,19 @@ async function getMedia(query, queries, postType, imageSource) {
     }
   } else if (postType === 'CAROUSEL') {
     const urls = [];
+    const carouselExclude = new Set();
     for (const q of queries) {
-      const imgs = await getImages(q, 1, imageSource);
-      urls.push(...imgs);
+      const imgs = await getImages(q, 1, imageSource, carouselExclude);
+      for (const img of imgs) {
+        if (!carouselExclude.has(normalizeUrl(img))) {
+          urls.push(img);
+          carouselExclude.add(normalizeUrl(img));
+        }
+      }
       markUsed(imgs);
+    }
+    if (urls.length < 2) {
+      console.warn(`  ⚠ Carousel only got ${urls.length} unique image(s) — skipping to avoid duplicates`);
     }
     result = { urls, isVideo: false };
   } else {
@@ -902,9 +918,24 @@ async function main() {
 
       // 4. Fetch media
       const primaryQuery = generated.image_query || 'luxury salon beauty professional';
-      const carouselQueries = slot.post_type === 'CAROUSEL'
-        ? (generated.image_queries || Array(6).fill(primaryQuery))
-        : [];
+      let carouselQueries = [];
+      if (slot.post_type === 'CAROUSEL') {
+        if (Array.isArray(generated.image_queries) && generated.image_queries.length >= 2) {
+          carouselQueries = generated.image_queries;
+        } else {
+          // Generate varied queries to avoid duplicate images
+          const variations = [
+            primaryQuery,
+            `${primaryQuery} interior`,
+            `${primaryQuery} workspace`,
+            `beauty professional luxury studio`,
+            `salon suite modern design`,
+            `independent beauty business`,
+          ];
+          carouselQueries = variations.slice(0, 6);
+          console.log('  ℹ Claude did not return image_queries — using varied fallback queries');
+        }
+      }
 
       const { urls: mediaUrls, isVideo } = await getMedia(
         primaryQuery,
