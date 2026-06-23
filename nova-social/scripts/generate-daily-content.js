@@ -382,7 +382,7 @@ function brandedSlideSvg(slide, index, total) {
     <rect x="175" y="${bodyStart - 70}" width="730" height="${Math.max(210, bodyLines.length * 58 + 96)}" rx="34" fill="${dark ? '#0b2d5c' : '#ffffff'}" opacity="0.84"/>
     ${svgText(slide.body, { x: 540, y: bodyStart, size: 42, weight: 500, fill: dark ? '#f8f3ea' : muted, maxChars: 38, lineHeight: 58 })}
     <text x="540" y="1220" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" letter-spacing="4" fill="${accent}">WWW.NOVACOLLECTIVE.VIP</text>
-    <text x="540" y="1272" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3" fill="${muted}">@NOVACOLLECTIVEVIP</text>
+    <text x="540" y="1272" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3" fill="${muted}">@NOVA.COLLECTIVEVIP</text>
   </svg>`;
 }
 
