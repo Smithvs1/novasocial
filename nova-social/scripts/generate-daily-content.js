@@ -87,11 +87,11 @@ OUTPUT FORMAT (return ONLY valid JSON, no markdown, no extra text):
 {
   "title": "Internal title",
   "slides": [
-    {"index": 1, "kicker": "short category label", "headline": "cover headline, max 9 words", "body": "one supporting sentence, max 20 words"},
-    {"index": 2, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
-    {"index": 3, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
-    {"index": 4, "kicker": "short label", "headline": "max 9 words", "body": "max 22 words"},
-    {"index": 5, "kicker": "short label", "headline": "CTA headline, max 9 words", "body": "include www.novacollective.vip, max 22 words"}
+    {"index": 1, "kicker": "short category label", "headline": "cover headline, max 7 words", "body": "one supporting sentence, max 16 words"},
+    {"index": 2, "kicker": "short label", "headline": "max 7 words", "body": "max 16 words"},
+    {"index": 3, "kicker": "short label", "headline": "max 7 words", "body": "max 16 words"},
+    {"index": 4, "kicker": "short label", "headline": "max 7 words", "body": "max 16 words"},
+    {"index": 5, "kicker": "short label", "headline": "CTA headline, max 7 words", "body": "include www.novacollective.vip, max 16 words"}
   ],
   "caption": "Instagram caption, 120–180 words, selling NOVA Collective membership and asking them to visit www.novacollective.vip",
   "hashtags": "12–18 relevant hashtags"
@@ -351,12 +351,20 @@ function normalizeBrandedSlides(generated, topicText) {
     ? generated.slides.slice(0, 5)
     : fallback;
 
-  return slides.map((slide, idx) => ({
-    index: idx + 1,
-    kicker: slide.kicker || fallback[idx].kicker,
-    headline: slide.headline || fallback[idx].headline,
-    body: slide.body || fallback[idx].body,
-  }));
+  return slides.map((slide, idx) => {
+    let headline = slide.headline || fallback[idx].headline;
+    let body = slide.body || fallback[idx].body;
+    const headlineWords = headline.split(/\s+/);
+    if (headlineWords.length > 9) headline = headlineWords.slice(0, 9).join(' ');
+    const bodyWords = body.split(/\s+/);
+    if (bodyWords.length > 20) body = bodyWords.slice(0, 20).join(' ') + '.';
+    return {
+      index: idx + 1,
+      kicker: slide.kicker || fallback[idx].kicker,
+      headline,
+      body,
+    };
+  });
 }
 
 function brandedSlideSvg(slide, index, total) {
@@ -366,8 +374,25 @@ function brandedSlideSvg(slide, index, total) {
   const primary = dark ? '#f8f3ea' : '#071f3f';
   const accent = dark ? '#d8b66a' : '#b6863b';
   const muted = dark ? '#d9e2ef' : '#5f6673';
-  const bodyLines = wrapText(slide.body, 38);
-  const bodyStart = bodyLines.length > 2 ? 830 : 860;
+
+  const headlineStartY = 470;
+  const headlineLineHeight = 96;
+  const headlineLines = wrapText(slide.headline, 15);
+  const headlineBottomY = headlineStartY + (headlineLines.length - 1) * headlineLineHeight;
+
+  const bodyMaxChars = 28;
+  const bodyFontSize = 38;
+  const bodyLineHeight = 50;
+  const bodyLines = wrapText(slide.body, bodyMaxChars);
+
+  const bodyBoxPad = 44;
+  const bodyBoxHeight = bodyBoxPad + bodyLines.length * bodyLineHeight + bodyBoxPad;
+  const bodyBoxWidth = 780;
+  const bodyBoxX = (1080 - bodyBoxWidth) / 2;
+  const maxBodyBoxBottom = 1160;
+  const idealBodyBoxTop = headlineBottomY + 80;
+  const bodyBoxTop = Math.min(idealBodyBoxTop, maxBodyBoxBottom - bodyBoxHeight);
+  const bodyTextY = bodyBoxTop + bodyBoxPad + bodyFontSize * 0.35;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350">
     <rect width="1080" height="1350" fill="${bg}"/>
@@ -378,9 +403,9 @@ function brandedSlideSvg(slide, index, total) {
     <text x="1010" y="58" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="${primary}">${index}/${total}</text>
     <text x="540" y="275" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" letter-spacing="6" fill="${accent}">${escapeXml(String(slide.kicker).toUpperCase())}</text>
     <line x1="245" y1="315" x2="835" y2="315" stroke="${accent}" stroke-width="3"/>
-    ${svgText(slide.headline, { x: 540, y: 470, size: 82, weight: 800, fill: primary, maxChars: 15, lineHeight: 96 })}
-    <rect x="175" y="${bodyStart - 70}" width="730" height="${Math.max(210, bodyLines.length * 58 + 96)}" rx="34" fill="${dark ? '#0b2d5c' : '#ffffff'}" opacity="0.84"/>
-    ${svgText(slide.body, { x: 540, y: bodyStart, size: 42, weight: 500, fill: dark ? '#f8f3ea' : muted, maxChars: 38, lineHeight: 58 })}
+    ${svgText(slide.headline, { x: 540, y: headlineStartY, size: 82, weight: 800, fill: primary, maxChars: 15, lineHeight: headlineLineHeight })}
+    <rect x="${bodyBoxX}" y="${bodyBoxTop}" width="${bodyBoxWidth}" height="${bodyBoxHeight}" rx="34" fill="${dark ? '#0b2d5c' : '#ffffff'}" opacity="0.84"/>
+    ${svgText(slide.body, { x: 540, y: bodyTextY, size: bodyFontSize, weight: 500, fill: dark ? '#f8f3ea' : muted, maxChars: bodyMaxChars, lineHeight: bodyLineHeight })}
     <text x="540" y="1220" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="800" letter-spacing="4" fill="${accent}">WWW.NOVACOLLECTIVE.VIP</text>
     <text x="540" y="1272" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3" fill="${muted}">@NOVA.COLLECTIVEVIP</text>
   </svg>`;
