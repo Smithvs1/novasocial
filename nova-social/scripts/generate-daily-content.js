@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import ws from 'ws';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -176,13 +176,16 @@ async function refreshInstagramToken(currentToken) {
     return null;
   }
 
-  const url = `https://graph.facebook.com/v25.0/oauth/access_token` +
-    `?grant_type=fb_exchange_token` +
-    `&client_id=${META_APP_ID}` +
-    `&client_secret=${META_APP_SECRET}` +
-    `&fb_exchange_token=${currentToken}`;
-
-  const res = await fetch(url);
+  const res = await fetch('https://graph.facebook.com/v25.0/oauth/access_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: META_APP_ID,
+      client_secret: META_APP_SECRET,
+      fb_exchange_token: currentToken,
+    }),
+  });
   if (!res.ok) {
     console.error(`  ⚠ IG token refresh HTTP error: ${res.status} ${res.statusText}`);
     return null;
@@ -719,31 +722,28 @@ async function mixVideoWithMusic(videoUrl, musicInfo) {
     const musBuf = Buffer.from(await musRes.arrayBuffer());
     writeFileSync(audioPath, musBuf);
 
-    const durationStr = execSync(
-      `ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}"`,
-      { encoding: 'utf8' }
-    ).trim();
+    const durationStr = execFileSync('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', videoPath
+    ], { encoding: 'utf8' }).trim();
     const duration = parseFloat(durationStr) || 15;
 
     let mixed = false;
     try {
-      execSync(
-        `ffmpeg -y -i "${videoPath}" -i "${audioPath}" `
-        + `-filter_complex "[1:a]volume=0.20,afade=t=out:st=${Math.max(0, duration - 2)}:d=2[music];`
-        + `[0:a]volume=1.0[orig];`
-        + `[orig][music]amix=inputs=2:duration=shortest[aout]" `
-        + `-map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 128k -shortest "${outputPath}"`,
-        { timeout: 120_000, stdio: 'pipe' }
-      );
+      execFileSync('ffmpeg', [
+        '-y', '-i', videoPath, '-i', audioPath,
+        '-filter_complex',
+        `[1:a]volume=0.20,afade=t=out:st=${Math.max(0, duration - 2)}:d=2[music];[0:a]volume=1.0[orig];[orig][music]amix=inputs=2:duration=shortest[aout]`,
+        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', outputPath
+      ], { timeout: 120_000, stdio: 'pipe' });
       mixed = true;
     } catch (ffmpegErr) {
       console.warn(`  ⚠ FFmpeg mix with original audio failed: ${ffmpegErr.message} — retrying without original audio`);
-      execSync(
-        `ffmpeg -y -i "${videoPath}" -i "${audioPath}" `
-        + `-filter_complex "[1:a]volume=0.25,afade=t=out:st=${Math.max(0, duration - 2)}:d=2[aout]" `
-        + `-map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 128k -shortest "${outputPath}"`,
-        { timeout: 120_000, stdio: 'pipe' }
-      );
+      execFileSync('ffmpeg', [
+        '-y', '-i', videoPath, '-i', audioPath,
+        '-filter_complex',
+        `[1:a]volume=0.25,afade=t=out:st=${Math.max(0, duration - 2)}:d=2[aout]`,
+        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', outputPath
+      ], { timeout: 120_000, stdio: 'pipe' });
       mixed = true;
     }
 
@@ -778,19 +778,13 @@ async function createVideoFromImage(imageUrl, musicInfo, durationSec = 10) {
     const fps = 30;
     const totalFrames = durationSec * fps;
     try {
-      execSync(
-        `ffmpeg -y -loop 1 -i "${imgPath}" -i "${audioPath}" `
-        + `-filter_complex "`
-        + `[0:v]scale=1920:1920:force_original_aspect_ratio=increase,`
-        + `crop=1080:1920,`
-        + `zoompan=z='min(zoom+0.0005,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1080x1920:fps=${fps},`
-        + `fade=t=in:st=0:d=0.5,fade=t=out:st=${durationSec - 0.5}:d=0.5[v];`
-        + `[1:a]volume=0.30,afade=t=in:st=0:d=1,afade=t=out:st=${durationSec - 2}:d=2[a]`
-        + `" `
-        + `-map "[v]" -map "[a]" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k `
-        + `-t ${durationSec} -pix_fmt yuv420p -shortest "${outputPath}"`,
-        { timeout: 180_000, stdio: 'pipe' }
-      );
+      execFileSync('ffmpeg', [
+        '-y', '-loop', '1', '-i', imgPath, '-i', audioPath,
+        '-filter_complex',
+        `[0:v]scale=1920:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0005,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1080x1920:fps=${fps},fade=t=in:st=0:d=0.5,fade=t=out:st=${durationSec - 0.5}:d=0.5[v];[1:a]volume=0.30,afade=t=in:st=0:d=1,afade=t=out:st=${durationSec - 2}:d=2[a]`,
+        '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k', '-t', String(durationSec), '-pix_fmt', 'yuv420p', '-shortest', outputPath
+      ], { timeout: 180_000, stdio: 'pipe' });
     } catch (ffmpegErr) {
       throw new Error(`FFmpeg Ken Burns video creation failed: ${ffmpegErr.message}`);
     }
@@ -898,11 +892,26 @@ async function generateContent(promptText, topic) {
   const raw       = message.content[0].text;
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error(`Claude did not return valid JSON.\nRaw: ${raw.slice(0, 300)}`);
+  let parsed;
   try {
-    return JSON.parse(jsonMatch[0]);
+    parsed = JSON.parse(jsonMatch[0]);
   } catch (parseErr) {
     throw new Error(`Failed to parse Claude JSON: ${parseErr.message}\nExtracted: ${jsonMatch[0].slice(0, 300)}`);
   }
+
+  // Validate required fields and sanitize string values
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('Claude response is not a valid object');
+  }
+  if (!parsed.caption || typeof parsed.caption !== 'string') {
+    throw new Error('Claude response missing required "caption" field');
+  }
+  // Sanitize optional fields to prevent unexpected types
+  if (parsed.image_query && typeof parsed.image_query !== 'string') parsed.image_query = '';
+  if (parsed.image_queries && !Array.isArray(parsed.image_queries)) parsed.image_queries = [];
+  if (parsed.hashtags && typeof parsed.hashtags !== 'string') parsed.hashtags = '';
+
+  return parsed;
 }
 
 // ─── Instagram ────────────────────────────────────────────────────────────────
@@ -910,9 +919,10 @@ async function generateContent(promptText, topic) {
 async function waitForIgContainer(creationId, maxAttempts = 90) {
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res  = await fetch(
-        `https://graph.facebook.com/v21.0/${creationId}?fields=status_code&access_token=${IG_TOKEN}`
-      );
+      const containerUrl = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(creationId)}`);
+      containerUrl.searchParams.set('fields', 'status_code');
+      containerUrl.searchParams.set('access_token', IG_TOKEN);
+      const res  = await fetch(containerUrl);
       if (!res.ok) {
         console.warn(`  ⚠ IG container status check HTTP error: ${res.status} (attempt ${i + 1}/${maxAttempts})`);
         await sleep(2000);
@@ -1065,7 +1075,10 @@ async function main() {
       console.warn('⚠ Instagram credentials missing — posting will be skipped');
     } else {
       try {
-        const igRes = await fetch(`https://graph.facebook.com/v21.0/${IG_USER_ID}?fields=id,username&access_token=${IG_TOKEN}`);
+        const validateUrl = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(IG_USER_ID)}`);
+        validateUrl.searchParams.set('fields', 'id,username');
+        validateUrl.searchParams.set('access_token', IG_TOKEN);
+        const igRes = await fetch(validateUrl);
         const igBody = await igRes.json();
         if (igBody.error) {
           console.error(`⚠ Instagram token validation failed: ${igBody.error.message}`);
