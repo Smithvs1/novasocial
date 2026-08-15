@@ -1,0 +1,38 @@
+name: Keep Alive
+
+# GitHub disables scheduled workflows after 60 days without repository activity.
+# Workflow runs do not count as activity — only commits do. This job commits a
+# timestamp monthly and re-enables the daily content workflow as a safety net.
+
+on:
+  schedule:
+    # 06:00 UTC on the 1st of every month
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keep-alive:
+    name: Reset workflow inactivity timer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Commit activity timestamp
+        run: |
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/last-activity.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/last-activity.txt
+          git commit -m 'chore: keep-alive — reset scheduled workflow inactivity timer'
+          git push
+
+      - name: Re-enable daily content workflow
+        run: gh workflow enable "NOVA Collective Daily Instagram Content"
+        env:
+          GH_TOKEN: ${{ github.token }}
