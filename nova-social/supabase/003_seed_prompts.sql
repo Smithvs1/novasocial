@@ -164,7 +164,7 @@ OUTPUT FORMAT (return ONLY valid JSON, no markdown, no extra text):
   ],
   "caption": "Instagram caption (150–200 words): relatable opener for this profession, teaser of what is inside, CTA to swipe and save, link to www.novacollective.vip",
   "hashtags": "15–20 hashtags — mix profession-specific + business ownership + salon suite + beauty entrepreneurship + NOVA Collective",
-  "image_queries": ["query for slide 1", "query for slide 2", "query for slide 3", "query for slide 4", "query for slide 5", "query for slide 6"]
+  "image_queries": ["6 stock-photo search queries, one per slide — each MUST describe a visually different scene (different subject, room, angle or detail) so no two slides can return the same photo; never repeat a query"]
 }');
 
 -- ============================================================
@@ -199,5 +199,5 @@ OUTPUT FORMAT (return ONLY valid JSON, no markdown, no extra text):
   ],
   "caption": "Instagram caption (150–200 words): culturally affirming opener, teaser of carousel content, CTA to swipe and save, link to www.novacollective.vip",
   "hashtags": "15–20 hashtags — mix profession-specific + diverse entrepreneurs + women in business + beauty industry + NOVA Collective",
-  "image_queries": ["query for slide 1", "query for slide 2", "query for slide 3", "query for slide 4", "query for slide 5", "query for slide 6"]
+  "image_queries": ["6 stock-photo search queries, one per slide — each MUST describe a visually different scene (different subject, room, angle or detail) so no two slides can return the same photo; never repeat a query"]
 }');
