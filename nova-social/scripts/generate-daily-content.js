@@ -232,13 +232,38 @@ async function loadAndRefreshTokens() {
   }
 }
 
-// ─── Image deduplication — no reuse for 90 days ─────────────────────────────
+// ─── Media deduplication — no reuse of any image or video for 90 days ────────
+
+const MEDIA_REUSE_WINDOW_DAYS = 90;
+const IMAGE_PROVIDERS = ['pexels', 'unsplash', 'pixabay'];
+const VIDEO_PROVIDERS = ['coverr', 'pexels', 'pixabay'];
+const PROVIDER_PAGE_DEPTH = 3;
+
+const BROADENING_IMAGE_QUERIES = [
+  'luxury salon suite interior',
+  'beauty professional studio',
+  'modern barbershop interior',
+  'esthetician treatment room',
+  'nail studio design',
+  'spa wellness interior',
+  'hairstylist working salon',
+  'boutique beauty studio',
+];
+
+const BROADENING_VIDEO_QUERIES = [
+  'beauty salon professional',
+  'luxury spa treatment',
+  'barber haircut modern',
+  'wellness studio interior',
+  'hair styling closeup',
+  'manicure nail salon',
+];
 
 let recentlyUsedUrls = new Set();
 
 async function loadRecentlyUsedImages() {
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 90);
+  cutoff.setDate(cutoff.getDate() - MEDIA_REUSE_WINDOW_DAYS);
 
   const { data, error } = await supabase
     .from('nc_generated_posts')
@@ -256,17 +281,28 @@ async function loadRecentlyUsedImages() {
     }
     if (row.video_url) recentlyUsedUrls.add(normalizeUrl(row.video_url));
   }
-  console.log(`  ✓ Loaded ${recentlyUsedUrls.size} recently used media URLs (90-day window)`);
+  console.log(`  ✓ Loaded ${recentlyUsedUrls.size} recently used media URLs (${MEDIA_REUSE_WINDOW_DAYS}-day window)`);
 }
 
+// Collapses every size variant, CDN parameter and signed query of one asset
+// onto a single key so the same photo/video can never slip through as "new".
 function normalizeUrl(url) {
   try {
     const u = new URL(url);
-    if (u.hostname.includes('unsplash.com')) return u.origin + u.pathname;
-    if (u.hostname.includes('pexels.com')) return u.origin + u.pathname;
-    if (u.hostname.includes('pixabay.com')) return u.origin + u.pathname;
-    if (u.hostname.includes('coverr.co')) return u.origin + u.pathname;
-    return url;
+    let path = u.pathname;
+
+    const vimeoId = path.match(/\/external\/(\d+)\./);
+    if (u.hostname.includes('vimeo.com') && vimeoId) return `vimeo:${vimeoId[1]}`;
+
+    const pexelsPhotoId = path.match(/\/photos\/(\d+)\//);
+    if (u.hostname.includes('pexels.com') && pexelsPhotoId) return `pexels-photo:${pexelsPhotoId[1]}`;
+
+    const pexelsVideoId = path.match(/\/video-files\/(\d+)\//);
+    if (u.hostname.includes('pexels.com') && pexelsVideoId) return `pexels-video:${pexelsVideoId[1]}`;
+
+    if (u.hostname.includes('pixabay.com')) path = path.replace(/_\d+(\.\w+)$/, '$1');
+
+    return u.origin + path;
   } catch {
     return url;
   }
@@ -274,14 +310,10 @@ function normalizeUrl(url) {
 
 function filterUnused(urls, excludeSet) {
   const exclude = excludeSet || new Set();
-  const fresh = urls.filter(u => {
+  return urls.filter(u => {
     const norm = normalizeUrl(u);
     return !recentlyUsedUrls.has(norm) && !exclude.has(norm);
   });
-  if (fresh.length > 0) return fresh;
-  // All used globally — at least exclude within-post duplicates
-  const deduped = urls.filter(u => !exclude.has(normalizeUrl(u)));
-  return deduped.length > 0 ? deduped : urls;
 }
 
 function markUsed(urls) {
@@ -438,12 +470,11 @@ async function createBrandedTextCarousel(generated, topicText) {
 
 // ─── Pexels ───────────────────────────────────────────────────────────────────
 
-async function getPexelsImages(query, count = 1, excludeSet) {
+async function getPexelsImages(query, excludeSet, page = 1) {
   if (!PEXELS_KEY) return [];
   try {
-    const fetchCount = Math.max(count * 5, 10);
     const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=80&page=${page}&orientation=landscape`,
       { headers: { Authorization: PEXELS_KEY } }
     );
     if (!res.ok) {
@@ -451,23 +482,8 @@ async function getPexelsImages(query, count = 1, excludeSet) {
       return [];
     }
     const data = await res.json();
-
-    if (!data.photos?.length) {
-      const fb = await fetch(
-        `https://api.pexels.com/v1/search?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
-        { headers: { Authorization: PEXELS_KEY } }
-      );
-      if (!fb.ok) {
-        console.error(`  ⚠ Pexels fallback API error: ${fb.status} ${fb.statusText}`);
-        return [];
-      }
-      const fbData = await fb.json();
-      const allUrls = (fbData.photos || []).map(p => p.src.large2x || p.src.large);
-      return filterUnused(allUrls, excludeSet).slice(0, count);
-    }
-
-    const allUrls = data.photos.map(p => p.src.large2x || p.src.large);
-    return filterUnused(allUrls, excludeSet).slice(0, count);
+    const allUrls = (data.photos || []).map(p => p.src.large2x || p.src.large);
+    return filterUnused(allUrls, excludeSet);
   } catch (e) {
     console.error(`  ⚠ Pexels image fetch failed: ${e.message}`);
     return [];
@@ -476,12 +492,11 @@ async function getPexelsImages(query, count = 1, excludeSet) {
 
 // ─── Unsplash ─────────────────────────────────────────────────────────────────
 
-async function getUnsplashImages(query, count = 1, excludeSet) {
+async function getUnsplashImages(query, excludeSet, page = 1) {
   if (!UNSPLASH_KEY) return [];
   try {
-    const fetchCount = Math.max(count * 5, 10);
     const res = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${fetchCount}&orientation=landscape`,
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=30&page=${page}&orientation=landscape`,
       { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
     );
     if (!res.ok) {
@@ -489,23 +504,8 @@ async function getUnsplashImages(query, count = 1, excludeSet) {
       return [];
     }
     const data = await res.json();
-
-    if (!data.results?.length) {
-      const fb = await fetch(
-        `https://api.unsplash.com/search/photos?query=luxury+salon+beauty+professional&per_page=${fetchCount}&orientation=landscape`,
-        { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
-      );
-      if (!fb.ok) {
-        console.error(`  ⚠ Unsplash fallback API error: ${fb.status} ${fb.statusText}`);
-        return [];
-      }
-      const fbData = await fb.json();
-      const allUrls = (fbData.results || []).map(p => p.urls.regular);
-      return filterUnused(allUrls, excludeSet).slice(0, count);
-    }
-
-    const allUrls = data.results.map(p => p.urls.regular);
-    return filterUnused(allUrls, excludeSet).slice(0, count);
+    const allUrls = (data.results || []).map(p => p.urls.regular);
+    return filterUnused(allUrls, excludeSet);
   } catch (e) {
     console.error(`  ⚠ Unsplash image fetch failed: ${e.message}`);
     return [];
@@ -514,34 +514,19 @@ async function getUnsplashImages(query, count = 1, excludeSet) {
 
 // ─── Pixabay ──────────────────────────────────────────────────────────────────
 
-async function getPixabayImages(query, count = 1, excludeSet) {
+async function getPixabayImages(query, excludeSet, page = 1) {
   if (!PIXABAY_KEY) return [];
   try {
-    const fetchCount = Math.max(count * 5, 10);
     const res = await fetch(
-      `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
+      `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&per_page=100&page=${page}&image_type=photo&orientation=horizontal&min_width=1080`
     );
     if (!res.ok) {
       console.error(`  ⚠ Pixabay API error: ${res.status} ${res.statusText}`);
       return [];
     }
     const data = await res.json();
-
-    if (!data.hits?.length) {
-      const fb = await fetch(
-        `https://pixabay.com/api/?key=${PIXABAY_KEY}&q=${encodeURIComponent('luxury salon beauty professional')}&per_page=${fetchCount}&image_type=photo&orientation=horizontal&min_width=1080`
-      );
-      if (!fb.ok) {
-        console.error(`  ⚠ Pixabay fallback API error: ${fb.status} ${fb.statusText}`);
-        return [];
-      }
-      const fbData = await fb.json();
-      const allUrls = (fbData.hits || []).map(h => h.largeImageURL || h.webformatURL);
-      return filterUnused(allUrls, excludeSet).slice(0, count);
-    }
-
-    const allUrls = data.hits.map(h => h.largeImageURL || h.webformatURL);
-    return filterUnused(allUrls, excludeSet).slice(0, count);
+    const allUrls = (data.hits || []).map(h => h.largeImageURL || h.webformatURL);
+    return filterUnused(allUrls, excludeSet);
   } catch (e) {
     console.error(`  ⚠ Pixabay image fetch failed: ${e.message}`);
     return [];
@@ -550,84 +535,73 @@ async function getPixabayImages(query, count = 1, excludeSet) {
 
 // ─── Coverr (video for Reels) ─────────────────────────────────────────────────
 
-async function getCoverrVideo(query) {
-  if (!COVERR_KEY) return null;
-
-  const queries = [
-    query,
-    'beauty salon professional',
-    'luxury spa wellness',
-    'barber hairstylist salon',
-    'modern workspace studio',
-  ];
-
-  for (const q of queries) {
-    try {
-      const res = await fetch(
-        `https://api.coverr.co/videos?query=${encodeURIComponent(q)}&page_size=5`,
-        { headers: { Authorization: `Bearer ${COVERR_KEY}` } }
-      );
-      if (!res.ok) {
-        console.warn(`  ⚠ Coverr API error for "${q}": ${res.status} ${res.statusText}`);
-        continue;
-      }
-      const data = await res.json();
-
-      if (data.hits?.length) {
-        for (const vid of data.hits) {
-          const url = vid.video_files?.[0]?.url || vid.urls?.mp4;
-          if (url && !recentlyUsedUrls.has(normalizeUrl(url))) return url;
-        }
-        // All used — return first available
-        const fallback = data.hits[0].video_files?.[0]?.url || data.hits[0].urls?.mp4;
-        if (fallback) return fallback;
-      }
-    } catch (e) {
-      console.warn(`  ⚠ Coverr search failed for "${q}": ${e.message}`);
+async function getCoverrVideos(query, page = 1) {
+  if (!COVERR_KEY) return [];
+  try {
+    const res = await fetch(
+      `https://api.coverr.co/videos?query=${encodeURIComponent(query)}&page_size=50&page=${page}`,
+      { headers: { Authorization: `Bearer ${COVERR_KEY}` } }
+    );
+    if (!res.ok) {
+      console.warn(`  ⚠ Coverr API error for "${query}": ${res.status} ${res.statusText}`);
+      return [];
     }
+    const data = await res.json();
+    const urls = (data.hits || [])
+      .map(vid => vid.video_files?.[0]?.url || vid.urls?.mp4)
+      .filter(Boolean);
+    return filterUnused(urls);
+  } catch (e) {
+    console.warn(`  ⚠ Coverr search failed for "${query}": ${e.message}`);
+    return [];
   }
-
-  return null;
 }
 
-// ─── Pexels Video (fallback for Reels when Coverr has no results) ─────────────
+// ─── Pexels Video ────────────────────────────────────────────────
 
-async function getPexelsVideo(query) {
-  if (!PEXELS_KEY) return null;
-
-  const queries = [
-    query,
-    'beauty salon professional',
-    'luxury spa treatment',
-    'barber haircut modern',
-    'wellness studio interior',
-  ];
-
-  for (const q of queries) {
-    try {
-      const res = await fetch(
-        `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=5&size=medium`,
-        { headers: { Authorization: PEXELS_KEY } }
-      );
-      if (!res.ok) {
-        console.warn(`  ⚠ Pexels video API error for "${q}": ${res.status} ${res.statusText}`);
-        continue;
-      }
-      const data = await res.json();
-      if (data.videos?.length) {
-        for (const vid of data.videos) {
-          const url = getBestVideoFile(vid.video_files);
-          if (url && !recentlyUsedUrls.has(normalizeUrl(url))) return url;
-        }
-        const fallbackUrl = getBestVideoFile(data.videos[0].video_files);
-        if (fallbackUrl) return fallbackUrl;
-      }
-    } catch (e) {
-      console.warn(`  ⚠ Pexels video search failed for "${q}": ${e.message}`);
+async function getPexelsVideos(query, page = 1) {
+  if (!PEXELS_KEY) return [];
+  try {
+    const res = await fetch(
+      `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=50&page=${page}&size=medium`,
+      { headers: { Authorization: PEXELS_KEY } }
+    );
+    if (!res.ok) {
+      console.warn(`  ⚠ Pexels video API error for "${query}": ${res.status} ${res.statusText}`);
+      return [];
     }
+    const data = await res.json();
+    const urls = (data.videos || [])
+      .map(vid => getBestVideoFile(vid.video_files || []))
+      .filter(Boolean);
+    return filterUnused(urls);
+  } catch (e) {
+    console.warn(`  ⚠ Pexels video search failed for "${query}": ${e.message}`);
+    return [];
   }
+}
 
-  return null;
+// ─── Pixabay Video ───────────────────────────────────────────────
+
+async function getPixabayVideos(query, page = 1) {
+  if (!PIXABAY_KEY) return [];
+  try {
+    const res = await fetch(
+      `https://pixabay.com/api/videos/?key=${PIXABAY_KEY}&q=${encodeURIComponent(query)}&per_page=100&page=${page}`
+    );
+    if (!res.ok) {
+      console.warn(`  ⚠ Pixabay video API error for "${query}": ${res.status} ${res.statusText}`);
+      return [];
+    }
+    const data = await res.json();
+    const urls = (data.hits || [])
+      .map(hit => hit.videos?.large?.url || hit.videos?.medium?.url || hit.videos?.small?.url)
+      .filter(Boolean);
+    return filterUnused(urls);
+  } catch (e) {
+    console.warn(`  ⚠ Pixabay video search failed for "${query}": ${e.message}`);
+    return [];
+  }
 }
 
 function getBestVideoFile(files) {
@@ -804,12 +778,73 @@ async function createVideoFromImage(imageUrl, musicInfo, durationSec = 10) {
   }
 }
 
-// ─── Media router — picks source based on week + post type ───────────────────
+// ─── Media router — rotation provider first, then every other provider ───────
 
+function providerOrder(providers, preferred) {
+  return [preferred, ...providers.filter(p => p !== preferred)];
+}
+
+function searchQueries(primaryQuery, broadening) {
+  const seen = new Set();
+  return [primaryQuery, ...broadening].filter(q => {
+    const key = q.toLowerCase();
+    if (!q || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function fetchImages(provider, query, excludeSet, page) {
+  if (provider === 'pexels') return getPexelsImages(query, excludeSet, page);
+  if (provider === 'unsplash') return getUnsplashImages(query, excludeSet, page);
+  return getPixabayImages(query, excludeSet, page);
+}
+
+async function fetchVideos(provider, query, page) {
+  if (provider === 'coverr') return getCoverrVideos(query, page);
+  if (provider === 'pexels') return getPexelsVideos(query, page);
+  return getPixabayVideos(query, page);
+}
+
+// Walks query × provider × page until `count` never-used images are collected.
+// Already-used media is never returned — a short result set is preferred over a repeat.
 async function getImages(query, count, imageSource, excludeSet) {
-  if (imageSource === 'pexels') return getPexelsImages(query, count, excludeSet);
-  if (imageSource === 'unsplash') return getUnsplashImages(query, count, excludeSet);
-  return getPixabayImages(query, count, excludeSet);
+  const exclude = new Set(excludeSet || []);
+  const picked = [];
+
+  for (const q of searchQueries(query, BROADENING_IMAGE_QUERIES)) {
+    for (const provider of providerOrder(IMAGE_PROVIDERS, imageSource)) {
+      for (let page = 1; page <= PROVIDER_PAGE_DEPTH; page++) {
+        const fresh = await fetchImages(provider, q, exclude, page);
+        if (!fresh.length) break;
+        for (const url of fresh) {
+          const norm = normalizeUrl(url);
+          if (exclude.has(norm)) continue;
+          exclude.add(norm);
+          picked.push(url);
+          if (picked.length >= count) return picked;
+        }
+      }
+    }
+  }
+
+  console.warn(`  ⚠ Only ${picked.length}/${count} unused image(s) available across ${IMAGE_PROVIDERS.join(', ')} — everything else was used in the last ${MEDIA_REUSE_WINDOW_DAYS} days. Add another media provider if this repeats.`);
+  return picked;
+}
+
+async function getVideo(query) {
+  for (const q of searchQueries(query, BROADENING_VIDEO_QUERIES)) {
+    for (const provider of VIDEO_PROVIDERS) {
+      for (let page = 1; page <= PROVIDER_PAGE_DEPTH; page++) {
+        const fresh = await fetchVideos(provider, q, page);
+        if (!fresh.length) break;
+        return { url: fresh[0], provider };
+      }
+    }
+  }
+
+  console.warn(`  ⚠ No unused video available across ${VIDEO_PROVIDERS.join(', ')} — everything else was used in the last ${MEDIA_REUSE_WINDOW_DAYS} days.`);
+  return null;
 }
 
 async function getMedia(query, queries, postType, imageSource, generated, topicText) {
@@ -819,16 +854,11 @@ async function getMedia(query, queries, postType, imageSource, generated, topicT
     const urls = await createBrandedTextCarousel(generated, topicText);
     result = { urls, isVideo: false, source: 'generated-graphic' };
   } else if (postType === 'REEL') {
-    // Try Coverr first, then Pexels video, then fall back to static image
-    let videoUrl = await getCoverrVideo(query);
-    if (!videoUrl) {
-      console.warn('  ⚠ No Coverr video — trying Pexels video...');
-      videoUrl = await getPexelsVideo(query);
-    }
-    if (videoUrl) {
-      result = { urls: [videoUrl], isVideo: true };
+    const video = await getVideo(query);
+    if (video) {
+      result = { urls: [video.url], isVideo: true, source: video.provider };
     } else {
-      console.warn('  ⚠ No video found — falling back to static image for Reel');
+      console.warn('  ⚠ No unused video found — falling back to static image for Reel');
       const imgs = await getImages(query, 1, imageSource);
       result = { urls: imgs, isVideo: false };
     }
@@ -845,8 +875,8 @@ async function getMedia(query, queries, postType, imageSource, generated, topicT
       }
       markUsed(imgs);
     }
-    if (urls.length < 2) {
-      console.warn(`  ⚠ Carousel only got ${urls.length} unique image(s) — skipping to avoid duplicates`);
+    if (urls.length < queries.length) {
+      console.warn(`  ⚠ Carousel got ${urls.length}/${queries.length} unused image(s)`);
     }
     result = { urls, isVideo: false };
   } else {
@@ -1151,20 +1181,20 @@ async function main() {
       const primaryQuery = generated.image_query || 'luxury salon beauty professional';
       let carouselQueries = [];
       if (slot.post_type === 'CAROUSEL') {
-        if (Array.isArray(generated.image_queries) && generated.image_queries.length >= 2) {
-          carouselQueries = generated.image_queries;
-        } else {
-          // Generate varied queries to avoid duplicate images
-          const variations = [
-            primaryQuery,
-            `${primaryQuery} interior`,
-            `${primaryQuery} workspace`,
-            `beauty professional luxury studio`,
-            `salon suite modern design`,
-            `independent beauty business`,
-          ];
-          carouselQueries = variations.slice(0, 6);
-          console.log('  ℹ Claude did not return image_queries — using varied fallback queries');
+        const fromClaude = Array.isArray(generated.image_queries)
+          ? generated.image_queries.filter(q => typeof q === 'string' && q.trim())
+          : [];
+        const topUp = [
+          primaryQuery,
+          `${primaryQuery} interior`,
+          `${primaryQuery} workspace`,
+          'beauty professional luxury studio',
+          'salon suite modern design',
+          'independent beauty business',
+        ];
+        carouselQueries = searchQueries(fromClaude[0] || primaryQuery, [...fromClaude.slice(1), ...topUp]).slice(0, 6);
+        if (fromClaude.length < 6) {
+          console.log(`  ℹ Claude returned ${fromClaude.length} image_queries — topped up to ${carouselQueries.length} distinct queries`);
         }
       }
 
@@ -1176,8 +1206,14 @@ async function main() {
         generated,
         topic.topic
       );
-      const mediaSource = source || (isVideo ? 'coverr/pexels' : imageSource);
+      const mediaSource = source || (isVideo ? VIDEO_PROVIDERS.join('/') : imageSource);
       console.log(`  ✓ Media — ${mediaUrls.length} ${isVideo ? 'video' : 'image'}(s) from ${mediaSource}`);
+
+      const minMedia = isCarouselPostType(slot.post_type) ? 2 : 1;
+      if (mediaUrls.length < minMedia) {
+        console.error(`  ✗ Skipping ${slot.post_type} — only ${mediaUrls.length} unused asset(s) found, will not reuse media from the last ${MEDIA_REUSE_WINDOW_DAYS} days`);
+        continue;
+      }
 
       // 5. Save to Supabase
       const { data: savedPost, error: saveErr } = await supabase
