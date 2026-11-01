@@ -33,6 +33,6 @@ jobs:
           git push
 
       - name: Re-enable daily content workflow
-        run: gh workflow enable "NOVA Collective Daily Instagram Content"
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/daily-content.yml/enable"
         env:
           GH_TOKEN: ${{ github.token }}
